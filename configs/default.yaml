@@ -1,0 +1,37 @@
+# 批量运行入口配置：只编排数据集列表和 governance 默认参数。
+
+governance:  # 第二篇 governance 主流程参数。
+  cp:  # CP 后决策可靠性验证参数。
+    enabled: true  # 是否启用该模块。
+    alpha: 0.1  # CP 显著性水平，越大 prediction set 越严格。
+  progressive_update:  # defer 路径渐进式风险证据更新参数。
+    enabled: true  # 是否启用该模块。
+    epsilon: 0.001  # 可靠性分数缺失或 BND 时使用的最小正数。
+  ablation:  # 消融实验开关。
+    disable_cp_validation: false  # 是否关闭 CP 验证；关闭后 P/N 默认可靠。
+    disable_progressive_update: false  # 是否关闭渐进式风险聚合，退回 parent/root 替代闭合。
+  output:  # governance 实验输出目录设置。
+    root_dir: outputs/governance  # governance 输出根目录。
+    mode_dirs:  # 不同实验模式对应的子目录名。
+      full: full  # 完整方法输出子目录名。
+      no_cp: no_cp  # 无 CP 消融输出子目录名。
+      no_progressive: no_progressive  # 无渐进更新消融输出子目录名。
+      no_cp_no_progressive: no_cp_no_progressive  # 同时关闭 CP 和渐进更新时的输出子目录名。
+
+datasets:  # 批量运行的数据集配置列表。
+- name: adult_bttwd  # 批量运行时使用的数据集标识。
+  config: adult_bttwd.yaml  # 数据集配置文件路径。
+- name: bank_bttwd  # 批量运行时使用的数据集标识。
+  config: bank_bttwd.yaml  # 数据集配置文件路径。
+- name: credit_default_bttwd  # 批量运行时使用的数据集标识。
+  config: credit_default_bttwd.yaml  # 数据集配置文件路径。
+- name: diabetic_bttwd  # 批量运行时使用的数据集标识。
+  config: diabetic_bttwd.yaml  # 数据集配置文件路径。
+- name: hospital_bttwd  # 批量运行时使用的数据集标识。
+  config: hospital_bttwd.yaml  # 数据集配置文件路径。
+- name: online_shoppers  # 批量运行时使用的数据集标识。
+  config: online_shoppers.yaml  # 数据集配置文件路径。
+- name: telco_churn  # 批量运行时使用的数据集标识。
+  config: telco_churn.yaml  # 数据集配置文件路径。
+- name: weatherAUS_bttwd  # 批量运行时使用的数据集标识。
+  config: weatherAUS_bttwd.yaml  # 数据集配置文件路径。

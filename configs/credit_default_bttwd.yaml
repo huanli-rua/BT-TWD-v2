@@ -1,0 +1,117 @@
+# 本配置仅保留第二篇 governance 实验运行所需参数。
+# 已移除第一篇 baseline、BSM、t-SNE、旧输出和局部 posterior 相关参数。
+
+DATA:  # 数据读取、标签和交叉验证划分参数。
+  dataset_name: credit_default  # 数据集名称，供数据加载器选择特殊读取逻辑，也会写入实验记录。
+  raw_path: ../data/credit/default of credit card clients.xls  # 原始数据文件路径；相对路径按配置文件所在目录或项目根目录解析。
+  target_col: default payment next month  # 标签列名称。
+  positive_label: 1  # 原始数据中正类标签取值，加载后映射为 1。
+  negative_label: 0  # 原始数据中负类标签取值，加载后映射为 0。
+  file_type: xls  # 数据文件类型，控制 CSV、ARFF、Excel 等读取方式。
+  excel:  # Excel 读取参数。
+    header: 1  # CSV 表头行设置。
+  n_splits: 5  # 分层 K 折交叉验证折数。
+  shuffle: true  # K 折划分前是否打乱样本。
+  random_state: 42  # 随机种子，保证实验可复现。
+  split:  # 每折训练集内部再划分验证集的比例设置。
+    val_ratio: 0.3  # validation/calibration 集比例，用于阈值搜索和 CP 校准。
+    test_ratio: 0.2  # 每折测试集比例；0.2 对应 5-fold。
+    random_state: 42  # 随机种子，保证实验可复现。
+
+PREPROCESS:  # 特征预处理参数。
+  continuous_cols: [LIMIT_BAL, AGE, BILL_AMT1, BILL_AMT2, BILL_AMT3, BILL_AMT4, BILL_AMT5, BILL_AMT6, PAY_AMT1, PAY_AMT2, PAY_AMT3, PAY_AMT4, PAY_AMT5, PAY_AMT6]  # 连续特征列，用于数值缩放并参与模型训练。
+  categorical_cols: [SEX, EDUCATION, MARRIAGE, ever_delay, max_delay_bin]  # 类别特征列，用于 one-hot 编码并参与模型训练。
+  drop_cols: [ID]  # 从建模特征中剔除的列。
+  handle_missing: simple  # 缺失值处理模式。
+  fillna_strategy: median  # 简单缺失值填充策略。
+  scaler_type: standard  # 连续特征缩放方式，standard 表示标准化。
+  feature_engineering:  # 数据集特定派生特征设置。
+    enable_credit_default_derived: true  # 是否启用信用卡违约派生特征。
+    pay_status_cols: [PAY_0, PAY_2, PAY_3, PAY_4, PAY_5, PAY_6]  # 信用卡还款状态列，用于派生逾期特征。
+    derive_ever_delay_col: ever_delay  # 是否曾逾期派生列名称。
+    derive_max_delay_col: max_delay  # 最大逾期程度派生列名称。
+    derive_max_delay_bin_col: max_delay_bin  # 最大逾期分箱派生列名称。
+    max_delay_bins: [-0.1, 0, 2, 4, 9]  # 最大逾期分箱边界。
+    max_delay_labels: ['0', 1-2, 3-4, 5+]  # 最大逾期分箱标签。
+
+BTTWD:  # bucket tree 和全局 posterior 参数；本轮不训练局部 posterior。
+  use_min_bucket_size_limit: true  # 构建 BT 时是否启用最小分桶训练样本数约束。
+  min_bucket_size: 50  # 构建 BT 时保留子桶所需的最少训练样本数；不足则回退到最近可用祖先。
+  min_val_samples_per_bucket: 15  # 桶级阈值估计和 weak 判定所需的最少 validation 样本数。
+  weak_bucket:
+    enabled: true
+    min_gain_over_parent: 0.0
+    sparse_labels: [OTHER, others, unknown]
+    score:
+      mode: composite
+      w_f1: 1.0
+      w_regret: 1.0
+      w_bnd: 0.5
+  bucket_levels:  # bucket tree 分层规则，决定样本路由路径。
+  - level: 1  # bucket tree 层级编号。
+    name: L1_ever_delay  # 分桶层名称，会进入 bucket_id。
+    type: numeric_bin  # 分桶规则类型，支持 numeric_bin 和 categorical_group。
+    col: ever_delay  # 用于当前层分桶的原始特征列。
+    bins: [0.5]  # 数值分桶边界。
+    labels: [no_delay, has_delay]  # 数值分桶标签，数量应为边界数 + 1。
+  - level: 2  # bucket tree 层级编号。
+    name: L2_max_delay_bin  # 分桶层名称，会进入 bucket_id。
+    type: categorical_group  # 分桶规则类型，支持 numeric_bin 和 categorical_group。
+    col: max_delay_bin  # 用于当前层分桶的原始特征列。
+    groups:  # 类别合并规则，把多个原始类别合并为一个桶标签。
+      none: ['0']  # 该合并桶包含的原始类别取值。
+      mild: [1-2]  # 该合并桶包含的原始类别取值。
+      medium: [3-4]  # 该合并桶包含的原始类别取值。
+      severe: [5+]  # 该合并桶包含的原始类别取值。
+    other_label: unknown  # 稀有或未知类别的默认标签。
+  - level: 3  # bucket tree 层级编号。
+    name: L3_limit_bal  # 分桶层名称，会进入 bucket_id。
+    type: numeric_bin  # 分桶规则类型，支持 numeric_bin 和 categorical_group。
+    col: LIMIT_BAL  # 用于当前层分桶的原始特征列。
+    bins: [80000, 200000]  # 数值分桶边界。
+    labels: [low_limit, mid_limit, high_limit]  # 数值分桶标签，数量应为边界数 + 1。
+  global_estimator: xgb  # 全局 posterior 模型类型；本轮所有方法共享该模型。
+  global_xgb:  # 全局 XGBoost posterior 参数。
+    n_estimators: 300  # XGBoost 树数量。
+    max_depth: 4  # XGBoost 单棵树最大深度。
+    learning_rate: 0.1  # XGBoost 学习率。
+    subsample: 0.8  # XGBoost 行采样比例。
+    colsample_bytree: 0.8  # XGBoost 列采样比例。
+    reg_lambda: 1.0  # XGBoost L2 正则化系数。
+    random_state: 42  # 随机种子，保证实验可复现。
+    n_jobs: -1  # 模型训练并行线程数。
+
+THRESHOLD:  # 三支决策阈值搜索参数。
+  mode: bucket_wise  # 阈值模式，本轮使用 bucket_wise。
+  objective: regret  # 阈值搜索目标，本轮使用 regret。
+  alpha_grid: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0]  # POS 阈值候选集合。
+  beta_grid: [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]  # NEG 阈值候选集合。
+  gap_min: 0.1  # alpha 与 beta 的最小间隔约束。
+  costs:  # TWD 风险/后悔值成本矩阵。
+    C_TP: 0.0  # 真实正类判为 POS 的成本。
+    C_TN: 0.0  # 真实负类判为 NEG 的成本。
+    C_FP: 1.0  # 真实负类误判为 POS 的成本。
+    C_FN: 3.0  # 真实正类误判为 NEG 的成本。
+    C_BP: 0.75  # 真实正类进入 BND 的成本。
+    C_BN: 0.5  # 真实负类进入 BND 的成本。
+
+SEED:  # 全局随机种子参数。
+  global_seed: 42  # 全局随机种子，控制 numpy/random 等可复现性。
+
+governance:  # 第二篇 governance 主流程参数。
+  cp:  # CP 后决策可靠性验证参数。
+    enabled: true  # 是否启用该模块。
+    alpha: 0.1  # CP 显著性水平，越大 prediction set 越严格。
+  progressive_update:  # defer 路径渐进式风险证据更新参数。
+    enabled: true  # 是否启用该模块。
+    epsilon: 0.001  # 可靠性分数缺失或 BND 时使用的最小正数。
+  ablation:  # 消融实验开关。
+    disable_cp_validation: false  # 是否关闭 CP 验证；关闭后 P/N 默认可靠。
+    disable_progressive_update: false  # 是否关闭渐进式风险聚合，退回 parent/root 替代闭合。
+  output:  # governance 实验输出目录设置。
+    root_dir: outputs/governance  # governance 输出根目录。
+    mode_dirs:  # 不同实验模式对应的子目录名。
+      full: full  # 完整方法输出子目录名。
+      no_cp: no_cp  # 无 CP 消融输出子目录名。
+      no_progressive: no_progressive  # 无渐进更新消融输出子目录名。
+      no_cp_no_progressive: no_cp_no_progressive  # 同时关闭 CP 和渐进更新时的输出子目录名。

@@ -1,0 +1,11 @@
+# 数据集清单说明文件。
+# 实际运行参数仍以各数据集专用 YAML 为准，本文件只帮助维护入口和数据路径。
+datasets:
+  adult_bttwd: configs/adult_bttwd.yaml
+  bank_bttwd: configs/bank_bttwd.yaml
+  credit_default_bttwd: configs/credit_default_bttwd.yaml
+  diabetic_bttwd: configs/diabetic_bttwd.yaml
+  hospital_bttwd: configs/hospital_bttwd.yaml
+  online_shoppers: configs/online_shoppers.yaml
+  telco_churn: configs/telco_churn.yaml
+  weatherAUS_bttwd: configs/weatherAUS_bttwd.yaml
