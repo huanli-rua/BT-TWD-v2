@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from ..bucket.routing import bucket_level, parent_bucket
 from ..twd.decision import decide_twd, risk_values_for_probability
+from .bnd_early_rescue import evaluate_bnd_early_rescue
 from .context_update import update_decision_context
 from .post_validation import is_cp_disabled, validate_post_decision
 
@@ -20,6 +21,14 @@ def _cp_cfg(config: dict) -> dict:
     return _governance_cfg(config).get("cp", {})
 
 
+def _bnd_early_rescue_cfg(config: dict) -> dict:
+    return _governance_cfg(config).get("bnd_early_rescue", {})
+
+
+def _is_bnd_early_rescue_enabled(config: dict) -> bool:
+    return bool(_bnd_early_rescue_cfg(config).get("enabled", True))
+
+
 def _is_progressive_disabled(config: dict) -> bool:
     governance_cfg = _governance_cfg(config)
     return bool(governance_cfg.get("ablation", {}).get("disable_progressive_update", False)) or not bool(
@@ -29,6 +38,17 @@ def _is_progressive_disabled(config: dict) -> bool:
 
 def _root_forced_decision(aggregated_risk: dict) -> str:
     return "P" if float(aggregated_risk.get("P", 0.0)) <= float(aggregated_risk.get("N", 0.0)) else "N"
+
+
+def _maybe_rescue_non_root_bnd(decision: str, current: str, posterior, risk_values: dict, validation: dict, config: dict):
+    if decision != "BND" or current == "ROOT" or not _is_bnd_early_rescue_enabled(config):
+        return None
+    return evaluate_bnd_early_rescue(
+        posterior=posterior,
+        risk_values=risk_values,
+        cp_result=validation,
+        config=config,
+    )
 
 
 def _fallback_reliability(decision: str, config: dict, cp_result: dict | None = None) -> float:
@@ -98,6 +118,7 @@ def _legacy_resolve(sample_id, start_bucket_id, posterior, thresholds, config, c
     defer_path = []
     status_log = []
     context = {}
+    last_bnd_early_rescue_attempt = None
 
     while True:
         alpha, beta = thresholds.get(current, thresholds.get("ROOT", (0.5, 0.0)))
@@ -151,6 +172,25 @@ def _legacy_resolve(sample_id, start_bucket_id, posterior, thresholds, config, c
             }
         )
 
+        rescue_result = _maybe_rescue_non_root_bnd(decision, current, posterior, risk_values, validation, config)
+        if rescue_result is not None:
+            last_bnd_early_rescue_attempt = rescue_result
+            status_log[-1]["bnd_early_rescue"] = rescue_result
+            if rescue_result.get("should_rescue") and rescue_result.get("decision") in {"P", "N"}:
+                return {
+                    "final_decision": rescue_result["decision"],
+                    "closure_bucket": current,
+                    "closure_level": level,
+                    "closure_reason": "bnd_early_rescue",
+                    "defer_path": defer_path,
+                    "closed": True,
+                    "status_log": status_log,
+                    "context": context,
+                    "progressive_update_enabled": False,
+                    "bnd_early_rescue": rescue_result,
+                    "bnd_early_rescue_attempt": rescue_result,
+                }
+
         if current == "ROOT":
             forced = _root_forced_decision(context.get("aggregated_risk", risk_values))
             status_log.append({"bucket_id": "ROOT", "level": 0, "decision": forced, "forced": True})
@@ -158,11 +198,13 @@ def _legacy_resolve(sample_id, start_bucket_id, posterior, thresholds, config, c
                 "final_decision": forced,
                 "closure_bucket": "ROOT",
                 "closure_level": 0,
+                "closure_reason": "root_forced",
                 "defer_path": defer_path,
                 "closed": True,
                 "status_log": status_log,
                 "context": context,
                 "progressive_update_enabled": False,
+                "bnd_early_rescue_attempt": last_bnd_early_rescue_attempt,
             }
 
         if decision in {"P", "N"} and (bool(validation.get("reliable")) or is_cp_disabled(config)):
@@ -170,11 +212,13 @@ def _legacy_resolve(sample_id, start_bucket_id, posterior, thresholds, config, c
                 "final_decision": decision,
                 "closure_bucket": current,
                 "closure_level": level,
+                "closure_reason": "post_validation",
                 "defer_path": defer_path,
                 "closed": True,
                 "status_log": status_log,
                 "context": context,
                 "progressive_update_enabled": False,
+                "bnd_early_rescue_attempt": last_bnd_early_rescue_attempt,
             }
 
         current = parent_bucket(current)
@@ -201,6 +245,7 @@ def resolve_deferred_sample(
     defer_path = []
     status_log = []
     context = {}
+    last_bnd_early_rescue_attempt = None
 
     while True:
         alpha, beta = thresholds.get(current, thresholds.get("ROOT", (0.5, 0.0)))
@@ -266,6 +311,25 @@ def resolve_deferred_sample(
             }
         )
 
+        rescue_result = _maybe_rescue_non_root_bnd(decision, current, posterior, risk_values, validation, config)
+        if rescue_result is not None:
+            last_bnd_early_rescue_attempt = rescue_result
+            status_log[-1]["bnd_early_rescue"] = rescue_result
+            if rescue_result.get("should_rescue") and rescue_result.get("decision") in {"P", "N"}:
+                return {
+                    "final_decision": rescue_result["decision"],
+                    "closure_bucket": current,
+                    "closure_level": level,
+                    "closure_reason": "bnd_early_rescue",
+                    "defer_path": defer_path,
+                    "closed": True,
+                    "status_log": status_log,
+                    "context": context,
+                    "progressive_update_enabled": True,
+                    "bnd_early_rescue": rescue_result,
+                    "bnd_early_rescue_attempt": rescue_result,
+                }
+
         if current == "ROOT":
             forced = _root_forced_decision(aggregated_risk)
             status_log.append({"bucket_id": "ROOT", "level": 0, "decision": forced, "forced": True})
@@ -273,11 +337,13 @@ def resolve_deferred_sample(
                 "final_decision": forced,
                 "closure_bucket": "ROOT",
                 "closure_level": 0,
+                "closure_reason": "root_forced",
                 "defer_path": defer_path,
                 "closed": True,
                 "status_log": status_log,
                 "context": context,
                 "progressive_update_enabled": True,
+                "bnd_early_rescue_attempt": last_bnd_early_rescue_attempt,
             }
 
         # 触发 defer 的原层只记录证据，不立即用自身聚合结果闭合；
@@ -293,11 +359,13 @@ def resolve_deferred_sample(
                 "final_decision": aggregated_decision,
                 "closure_bucket": current,
                 "closure_level": level,
+                "closure_reason": "progressive_aggregation",
                 "defer_path": defer_path,
                 "closed": True,
                 "status_log": status_log,
                 "context": context,
                 "progressive_update_enabled": True,
+                "bnd_early_rescue_attempt": last_bnd_early_rescue_attempt,
             }
 
         current = parent_bucket(current)

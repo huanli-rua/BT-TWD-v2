@@ -100,6 +100,13 @@ governance:  # 第二篇 governance 主流程参数。
   progressive_update:  # defer 路径渐进式风险证据更新参数。
     enabled: true  # 是否启用该模块。
     epsilon: 0.001  # 可靠性分数缺失或 BND 时使用的最小正数。
+  bnd_early_rescue:  # 非 ROOT BND 的局部提前闭合机制。
+    enabled: true  # 是否启用 BND early rescue。
+    posterior_margin_threshold: 0.10  # posterior 相对 0.5 的最小明确边距。
+    risk_gap_threshold: 0.05  # P/N 风险差的最小明确差距。
+    cp_gap_threshold: 0.10  # 已有 CP p-value 差距的最小明确差距。
+    cp_override_threshold: 0.20  # CP 差距足够大时允许按 CP 支持类别闭合。
+    min_conditions: 2  # 至少满足多少个明确性条件才 rescue。
   ablation:  # 消融实验开关。
     disable_cp_validation: false  # 是否关闭 CP 验证；关闭后 P/N 默认可靠。
     disable_progressive_update: false  # 是否关闭渐进式风险聚合，退回 parent/root 替代闭合。

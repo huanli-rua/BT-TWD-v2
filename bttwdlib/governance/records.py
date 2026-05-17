@@ -33,6 +33,9 @@ def build_sample_record(
     bucket_context = bucket_context or {}
     raw_bucket_id = bucket_context.get("raw_bucket_id", original_bucket_id)
     effective_bucket_id = bucket_context.get("effective_bucket_id", original_bucket_id)
+    rescue_result = (defer_result or {}).get("bnd_early_rescue", {}) or {}
+    rescue_attempt = rescue_result or (defer_result or {}).get("bnd_early_rescue_attempt", {}) or {}
+    rescue_used = bool(rescue_result.get("should_rescue", False)) if not reliable else False
     return {
         "dataset_name": dataset_name,
         "fold_id": fold_id,
@@ -68,9 +71,16 @@ def build_sample_record(
         "defer_path": "" if reliable else _json_dump(defer_result.get("defer_path", [])),
         "closure_bucket": original_bucket_id if reliable else defer_result.get("closure_bucket"),
         "closure_level": bucket_level(original_bucket_id) if reliable else defer_result.get("closure_level"),
+        "closure_reason": "" if reliable else defer_result.get("closure_reason", ""),
         "final_decision": final_decision,
         "closed": True if reliable else bool(defer_result.get("closed")),
         "final_regret": float(final_regret),
+        "bnd_early_rescue_used": rescue_used,
+        "bnd_early_rescue_decision": rescue_result.get("decision", "") if rescue_used else "",
+        "bnd_early_rescue_reason": rescue_result.get("rescue_reason", "") if rescue_used else "",
+        "bnd_posterior_margin": rescue_attempt.get("posterior_margin"),
+        "bnd_risk_gap": rescue_attempt.get("risk_gap"),
+        "bnd_cp_gap": rescue_attempt.get("cp_gap"),
         "progressive_update_enabled": bool(defer_result.get("progressive_update_enabled", False)) if not reliable else False,
         "evidence_path": "" if reliable else _json_dump(evidence),
         "aggregated_risk": "" if reliable else _json_dump(aggregated_risk),

@@ -399,6 +399,12 @@ def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
     bnd_parent_records = bnd_records[
         (bnd_records["closure_level"] > 0) & (bnd_records["closure_bucket"] != bnd_records["original_bucket_id"])
     ]
+    bnd_rescue_records = bnd_records[bnd_records["bnd_early_rescue_used"]]
+    bnd_rescue_leaf_records = bnd_rescue_records[bnd_rescue_records["closure_bucket"] == bnd_rescue_records["original_bucket_id"]]
+    bnd_rescue_parent_records = bnd_rescue_records[
+        (bnd_rescue_records["closure_level"] > 0)
+        & (bnd_rescue_records["closure_bucket"] != bnd_rescue_records["original_bucket_id"])
+    ]
     evidence_counts = records["evidence_path"].fillna("").apply(_json_len)
     weight_entropy = records["evidence_weights"].fillna("").apply(_json_weight_entropy)
     return {
@@ -426,6 +432,15 @@ def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
         "bnd_closed_regret": float(bnd_records["final_regret"].mean()) if len(bnd_records) else 0.0,
         "bnd_closed_at_parent_count": int(len(bnd_parent_records)),
         "bnd_closed_at_root_count": int(len(bnd_root_records)),
+        "bnd_early_rescue_count": int(len(bnd_rescue_records)),
+        "bnd_early_rescue_error_rate": _error_rate(bnd_rescue_records, "final_decision"),
+        "bnd_early_rescue_regret": float(bnd_rescue_records["final_regret"].mean()) if len(bnd_rescue_records) else 0.0,
+        "bnd_early_rescue_positive_rate": float((bnd_rescue_records["final_decision"] == "P").mean())
+        if len(bnd_rescue_records)
+        else 0.0,
+        "bnd_early_rescue_at_leaf_count": int(len(bnd_rescue_leaf_records)),
+        "bnd_early_rescue_at_parent_count": int(len(bnd_rescue_parent_records)),
+        "root_bnd_count_after_rescue": int(len(bnd_root_records)),
         "cp_pass_count": cp_pass_count,
         "cp_reject_count": cp_reject_count,
         "cp_reject_defer_count": int((pn_records["defer_trigger_source"] == "post_validation").sum()),
@@ -586,6 +601,7 @@ def _merge_governance_override(base: dict | None, cli_args: argparse.Namespace |
     governance = dict(base or {})
     governance.setdefault("cp", {})
     governance.setdefault("progressive_update", {})
+    governance.setdefault("bnd_early_rescue", {})
     governance.setdefault("ablation", {})
     if cli_args is not None:
         if cli_args.cp_alpha is not None:
@@ -598,6 +614,12 @@ def _merge_governance_override(base: dict | None, cli_args: argparse.Namespace |
     governance["cp"].setdefault("alpha", 0.1)
     governance["progressive_update"].setdefault("enabled", True)
     governance["progressive_update"].setdefault("epsilon", 0.001)
+    governance["bnd_early_rescue"].setdefault("enabled", True)
+    governance["bnd_early_rescue"].setdefault("posterior_margin_threshold", 0.10)
+    governance["bnd_early_rescue"].setdefault("risk_gap_threshold", 0.05)
+    governance["bnd_early_rescue"].setdefault("cp_gap_threshold", 0.10)
+    governance["bnd_early_rescue"].setdefault("cp_override_threshold", 0.20)
+    governance["bnd_early_rescue"].setdefault("min_conditions", 2)
     governance["ablation"].setdefault("disable_cp_validation", False)
     governance["ablation"].setdefault("disable_progressive_update", False)
     return governance
@@ -623,7 +645,7 @@ def _mode_name(governance: dict) -> str:
 
 def _summarize_dataset(fold_df: pd.DataFrame) -> dict:
     row = {"dataset_name": fold_df["dataset_name"].iat[0]}
-    count_cols = [col for col in fold_df.columns if col.endswith("_count")]
+    count_cols = [col for col in fold_df.columns if col.endswith("_count") or col.endswith("_count_after_rescue")]
     for col in [c for c in fold_df.columns if c not in {"dataset_name", "fold_id"}]:
         if col in count_cols:
             row[col] = int(fold_df[col].sum())
@@ -631,6 +653,23 @@ def _summarize_dataset(fold_df: pd.DataFrame) -> dict:
             row[col] = bool(fold_df[col].any())
         else:
             row[col] = float(fold_df[col].mean())
+    total_cols = {
+        "total_bnd_early_rescue_count": "bnd_early_rescue_count",
+        "total_bnd_early_rescue_at_leaf_count": "bnd_early_rescue_at_leaf_count",
+        "total_bnd_early_rescue_at_parent_count": "bnd_early_rescue_at_parent_count",
+        "total_root_bnd_after_rescue": "root_bnd_count_after_rescue",
+    }
+    for output_col, source_col in total_cols.items():
+        if source_col in fold_df:
+            row[output_col] = int(fold_df[source_col].sum())
+    avg_cols = {
+        "avg_bnd_early_rescue_error_rate": "bnd_early_rescue_error_rate",
+        "avg_bnd_early_rescue_regret": "bnd_early_rescue_regret",
+        "avg_bnd_early_rescue_positive_rate": "bnd_early_rescue_positive_rate",
+    }
+    for output_col, source_col in avg_cols.items():
+        if source_col in fold_df:
+            row[output_col] = float(fold_df[source_col].mean())
     return row
 
 
