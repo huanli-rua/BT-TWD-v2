@@ -400,11 +400,8 @@ def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
         (bnd_records["closure_level"] > 0) & (bnd_records["closure_bucket"] != bnd_records["original_bucket_id"])
     ]
     bnd_rescue_records = bnd_records[bnd_records["bnd_early_rescue_used"]]
-    bnd_rescue_leaf_records = bnd_rescue_records[bnd_rescue_records["closure_bucket"] == bnd_rescue_records["original_bucket_id"]]
-    bnd_rescue_parent_records = bnd_rescue_records[
-        (bnd_rescue_records["closure_level"] > 0)
-        & (bnd_rescue_records["closure_bucket"] != bnd_rescue_records["original_bucket_id"])
-    ]
+    bnd_rescue_leaf_records = bnd_rescue_records[bnd_rescue_records["bnd_early_rescue_layer"] == "leaf"]
+    bnd_rescue_parent_records = bnd_rescue_records[bnd_rescue_records["bnd_early_rescue_layer"] == "parent"]
     evidence_counts = records["evidence_path"].fillna("").apply(_json_len)
     weight_entropy = records["evidence_weights"].fillna("").apply(_json_weight_entropy)
     return {
@@ -556,6 +553,7 @@ def run_dataset(
                     cp_validator=cp_validator,
                     initial_decision=original_decision,
                     initial_validation=validation,
+                    bucket_meta=bucket_meta,
                 )
             final_decision = original_decision if validation["reliable"] else defer_result["final_decision"]
             rec = build_sample_record(
@@ -619,6 +617,8 @@ def _merge_governance_override(base: dict | None, cli_args: argparse.Namespace |
     governance["bnd_early_rescue"].setdefault("risk_gap_threshold", 0.05)
     governance["bnd_early_rescue"].setdefault("cp_gap_threshold", 0.10)
     governance["bnd_early_rescue"].setdefault("cp_override_threshold", 0.20)
+    governance["bnd_early_rescue"].setdefault("bucket_margin_threshold", 0.15)
+    governance["bnd_early_rescue"].setdefault("min_bucket_support", 20)
     governance["bnd_early_rescue"].setdefault("min_conditions", 2)
     governance["ablation"].setdefault("disable_cp_validation", False)
     governance["ablation"].setdefault("disable_progressive_update", False)

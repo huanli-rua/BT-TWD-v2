@@ -36,6 +36,10 @@ def build_sample_record(
     rescue_result = (defer_result or {}).get("bnd_early_rescue", {}) or {}
     rescue_attempt = rescue_result or (defer_result or {}).get("bnd_early_rescue_attempt", {}) or {}
     rescue_used = bool(rescue_result.get("should_rescue", False)) if not reliable else False
+    closure_bucket = original_bucket_id if reliable else defer_result.get("closure_bucket")
+    rescue_layer = ""
+    if rescue_used:
+        rescue_layer = "leaf" if closure_bucket == raw_bucket_id else "parent"
     return {
         "dataset_name": dataset_name,
         "fold_id": fold_id,
@@ -69,7 +73,7 @@ def build_sample_record(
         "alpha_cp": float(validation.get("alpha_cp", 0.1)),
         "defer_trigger_source": "" if reliable else ("BND" if original_twd_decision == "BND" else "post_validation"),
         "defer_path": "" if reliable else _json_dump(defer_result.get("defer_path", [])),
-        "closure_bucket": original_bucket_id if reliable else defer_result.get("closure_bucket"),
+        "closure_bucket": closure_bucket,
         "closure_level": bucket_level(original_bucket_id) if reliable else defer_result.get("closure_level"),
         "closure_reason": "" if reliable else defer_result.get("closure_reason", ""),
         "final_decision": final_decision,
@@ -78,9 +82,13 @@ def build_sample_record(
         "bnd_early_rescue_used": rescue_used,
         "bnd_early_rescue_decision": rescue_result.get("decision", "") if rescue_used else "",
         "bnd_early_rescue_reason": rescue_result.get("rescue_reason", "") if rescue_used else "",
+        "bnd_early_rescue_layer": rescue_layer,
         "bnd_posterior_margin": rescue_attempt.get("posterior_margin"),
         "bnd_risk_gap": rescue_attempt.get("risk_gap"),
         "bnd_cp_gap": rescue_attempt.get("cp_gap"),
+        "bnd_bucket_class_margin": rescue_attempt.get("bucket_class_margin"),
+        "bnd_bucket_support": rescue_attempt.get("bucket_support"),
+        "bnd_bucket_pos_rate": rescue_attempt.get("bucket_pos_rate"),
         "progressive_update_enabled": bool(defer_result.get("progressive_update_enabled", False)) if not reliable else False,
         "evidence_path": "" if reliable else _json_dump(evidence),
         "aggregated_risk": "" if reliable else _json_dump(aggregated_risk),

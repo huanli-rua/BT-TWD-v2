@@ -40,13 +40,23 @@ def _root_forced_decision(aggregated_risk: dict) -> str:
     return "P" if float(aggregated_risk.get("P", 0.0)) <= float(aggregated_risk.get("N", 0.0)) else "N"
 
 
-def _maybe_rescue_non_root_bnd(decision: str, current: str, posterior, risk_values: dict, validation: dict, config: dict):
+def _maybe_rescue_non_root_bnd(
+    decision: str,
+    current: str,
+    posterior,
+    risk_values: dict,
+    validation: dict,
+    config: dict,
+    bucket_meta: dict | None = None,
+):
     if decision != "BND" or current == "ROOT" or not _is_bnd_early_rescue_enabled(config):
         return None
+    bucket_context = (bucket_meta or {}).get(current, {}) if isinstance(bucket_meta, dict) else {}
     return evaluate_bnd_early_rescue(
         posterior=posterior,
         risk_values=risk_values,
         cp_result=validation,
+        bucket_context=bucket_context,
         config=config,
     )
 
@@ -110,7 +120,7 @@ def _validate_layer(sample_id, bucket_id, decision, posterior, risk_values, conf
     )
 
 
-def _legacy_resolve(sample_id, start_bucket_id, posterior, thresholds, config, cp_validator=None):
+def _legacy_resolve(sample_id, start_bucket_id, posterior, thresholds, config, cp_validator=None, bucket_meta=None):
     """progressive_update.enabled=false 时的旧闭合逻辑：parent/root 替代。"""
 
     costs = (config.get("THRESHOLD") or config.get("THRESHOLDS", {})).get("costs", {})
@@ -172,7 +182,9 @@ def _legacy_resolve(sample_id, start_bucket_id, posterior, thresholds, config, c
             }
         )
 
-        rescue_result = _maybe_rescue_non_root_bnd(decision, current, posterior, risk_values, validation, config)
+        rescue_result = _maybe_rescue_non_root_bnd(
+            decision, current, posterior, risk_values, validation, config, bucket_meta=bucket_meta
+        )
         if rescue_result is not None:
             last_bnd_early_rescue_attempt = rescue_result
             status_log[-1]["bnd_early_rescue"] = rescue_result
@@ -234,11 +246,20 @@ def resolve_deferred_sample(
     cp_validator=None,
     initial_decision=None,
     initial_validation=None,
+    bucket_meta=None,
 ):
     """沿 leaf -> parent -> root 渐进式累积风险证据并闭合 defer 样本。"""
 
     if _is_progressive_disabled(config):
-        return _legacy_resolve(sample_id, start_bucket_id, posterior, thresholds, config, cp_validator=cp_validator)
+        return _legacy_resolve(
+            sample_id,
+            start_bucket_id,
+            posterior,
+            thresholds,
+            config,
+            cp_validator=cp_validator,
+            bucket_meta=bucket_meta,
+        )
 
     costs = (config.get("THRESHOLD") or config.get("THRESHOLDS", {})).get("costs", {})
     current = start_bucket_id
@@ -311,7 +332,9 @@ def resolve_deferred_sample(
             }
         )
 
-        rescue_result = _maybe_rescue_non_root_bnd(decision, current, posterior, risk_values, validation, config)
+        rescue_result = _maybe_rescue_non_root_bnd(
+            decision, current, posterior, risk_values, validation, config, bucket_meta=bucket_meta
+        )
         if rescue_result is not None:
             last_bnd_early_rescue_attempt = rescue_result
             status_log[-1]["bnd_early_rescue"] = rescue_result
