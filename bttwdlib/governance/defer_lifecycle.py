@@ -48,10 +48,12 @@ def _maybe_rescue_non_root_bnd(
     validation: dict,
     config: dict,
     bucket_meta: dict | None = None,
+    is_parent_rescue: bool = False,
 ):
     if decision != "BND" or current == "ROOT" or not _is_bnd_early_rescue_enabled(config):
         return None
-    bucket_context = (bucket_meta or {}).get(current, {}) if isinstance(bucket_meta, dict) else {}
+    bucket_context = dict((bucket_meta or {}).get(current, {}) if isinstance(bucket_meta, dict) else {})
+    bucket_context["is_parent_rescue"] = bool(is_parent_rescue)
     return evaluate_bnd_early_rescue(
         posterior=posterior,
         risk_values=risk_values,
@@ -196,7 +198,14 @@ def _legacy_resolve(
         )
 
         rescue_result = _maybe_rescue_non_root_bnd(
-            decision, current, posterior, risk_values, validation, config, bucket_meta=bucket_meta
+            decision,
+            current,
+            posterior,
+            risk_values,
+            validation,
+            config,
+            bucket_meta=bucket_meta,
+            is_parent_rescue=current != start_bucket_id,
         )
         if rescue_result is not None:
             last_bnd_early_rescue_attempt = rescue_result
@@ -352,7 +361,14 @@ def resolve_deferred_sample(
         )
 
         rescue_result = _maybe_rescue_non_root_bnd(
-            decision, current, posterior, risk_values, validation, config, bucket_meta=bucket_meta
+            decision,
+            current,
+            posterior,
+            risk_values,
+            validation,
+            config,
+            bucket_meta=bucket_meta,
+            is_parent_rescue=current != start_bucket_id or start_bucket_id == "ROOT",
         )
         if rescue_result is not None:
             last_bnd_early_rescue_attempt = rescue_result

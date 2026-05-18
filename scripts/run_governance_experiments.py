@@ -621,6 +621,17 @@ def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
     )
     bnd_rescue_candidate_success_records = bnd_rescue_candidate_records[bnd_rescue_candidate_records["bnd_early_rescue_used"]]
     bnd_rescue_from_effective_root_records = bnd_rescue_records[bnd_rescue_records["original_bucket_id"] == "ROOT"]
+    bnd_directional_guard_block_records = (
+        bnd_records[bnd_records["bnd_directional_guard_blocked"]]
+        if "bnd_directional_guard_blocked" in bnd_records
+        else bnd_records.iloc[0:0]
+    )
+    if "bnd_early_rescue_attempt_layer" in bnd_directional_guard_block_records:
+        bnd_parent_directional_guard_block_records = bnd_directional_guard_block_records[
+            bnd_directional_guard_block_records["bnd_early_rescue_attempt_layer"].fillna("") == "parent"
+        ]
+    else:
+        bnd_parent_directional_guard_block_records = bnd_directional_guard_block_records.iloc[0:0]
     non_root_bnd_records = bnd_records[bnd_records["original_bucket_id"] != "ROOT"]
     non_root_bnd_rescue_records = non_root_bnd_records[non_root_bnd_records["bnd_early_rescue_used"]]
     root_bnd_from_effective_root_records = bnd_root_records[bnd_root_records["original_bucket_id"] == "ROOT"]
@@ -677,6 +688,11 @@ def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
         else 0.0,
         "bnd_rescue_from_effective_root_count": int(len(bnd_rescue_from_effective_root_records)),
         "bnd_rescue_from_effective_root_error_rate": _error_rate(bnd_rescue_from_effective_root_records, "final_decision"),
+        "bnd_directional_guard_block_count": int(len(bnd_directional_guard_block_records)),
+        "bnd_directional_guard_block_rate": float(len(bnd_directional_guard_block_records) / len(bnd_records))
+        if len(bnd_records)
+        else 0.0,
+        "bnd_parent_directional_guard_block_count": int(len(bnd_parent_directional_guard_block_records)),
         "root_bnd_count_after_rescue": int(len(bnd_root_records)),
         "non_root_bnd_count": int(len(non_root_bnd_records)),
         "non_root_bnd_rescue_count": int(len(non_root_bnd_rescue_records)),
@@ -899,6 +915,20 @@ def _merge_governance_override(base: dict | None, cli_args: argparse.Namespace |
     governance["bnd_early_rescue"].setdefault(
         "rescue_only_allowed_weak_reasons", ["insufficient_improvement_over_parent"]
     )
+    governance["bnd_early_rescue"].setdefault("directional_rescue_enabled", True)
+    governance["bnd_early_rescue"].setdefault("min_aligned_conditions", 2)
+    governance["bnd_early_rescue"].setdefault("min_direction_gap", 1)
+    governance["bnd_early_rescue"].setdefault("directional_guard_enabled", True)
+    governance["bnd_early_rescue"].setdefault("parent_directional_guard_enabled", True)
+    governance["bnd_early_rescue"].setdefault("n_bucket_pos_rate_max", 0.35)
+    governance["bnd_early_rescue"].setdefault("n_posterior_max", 0.40)
+    governance["bnd_early_rescue"].setdefault("n_min_risk_gap", 0.08)
+    governance["bnd_early_rescue"].setdefault("p_bucket_pos_rate_min", 0.40)
+    governance["bnd_early_rescue"].setdefault("p_posterior_min", 0.35)
+    governance["bnd_early_rescue"].setdefault("p_min_risk_gap", 0.08)
+    governance["bnd_early_rescue"].setdefault("parent_n_bucket_pos_rate_max", 0.32)
+    governance["bnd_early_rescue"].setdefault("parent_p_bucket_pos_rate_min", 0.42)
+    governance["bnd_early_rescue"].setdefault("parent_ambiguous_posterior_band", 0.03)
     governance["bnd_early_rescue"].setdefault("min_conditions", 2)
     governance["ablation"].setdefault("disable_cp_validation", False)
     governance["ablation"].setdefault("disable_progressive_update", False)
@@ -958,6 +988,8 @@ def _summarize_dataset(fold_df: pd.DataFrame) -> dict:
         "total_bnd_rescue_parent_candidate_count": "bnd_rescue_parent_candidate_count",
         "total_bnd_rescue_parent_candidate_success_count": "bnd_rescue_parent_candidate_success_count",
         "total_bnd_rescue_from_effective_root_count": "bnd_rescue_from_effective_root_count",
+        "total_bnd_directional_guard_block_count": "bnd_directional_guard_block_count",
+        "total_bnd_parent_directional_guard_block_count": "bnd_parent_directional_guard_block_count",
     }
     for output_col, source_col in total_cols.items():
         if source_col in fold_df:
@@ -972,6 +1004,7 @@ def _summarize_dataset(fold_df: pd.DataFrame) -> dict:
         "avg_rescue_vs_root_regret_delta": "rescue_vs_root_regret_delta",
         "avg_bnd_rescue_parent_candidate_success_rate": "bnd_rescue_parent_candidate_success_rate",
         "avg_bnd_rescue_from_effective_root_error_rate": "bnd_rescue_from_effective_root_error_rate",
+        "avg_bnd_directional_guard_block_rate": "bnd_directional_guard_block_rate",
     }
     for output_col, source_col in avg_cols.items():
         if source_col in fold_df:

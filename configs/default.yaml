@@ -17,6 +17,20 @@ governance:  # 第二篇 governance 主流程参数。
     min_bucket_support: 20  # 当前 bucket 至少需要的验证集样本数。
     rescue_only_parent_enabled: true  # effective ROOT 的 BND 是否允许先用最近 parent 做 rescue-only 尝试。
     rescue_only_allowed_weak_reasons: [insufficient_improvement_over_parent]  # 只允许结构收益不足的 weak parent 作为 rescue 证据。
+    directional_rescue_enabled: true  # 是否要求 posterior/risk/CP/bucket 证据在 P/N 方向上一致。
+    min_aligned_conditions: 2  # 至少需要多少个同向证据才允许 rescue。
+    min_direction_gap: 1  # 同向证据数必须比反向证据数至少多多少。
+    directional_guard_enabled: true  # 是否启用方向保护，阻止弱 P/N 证据直接闭合。
+    parent_directional_guard_enabled: true  # parent rescue 是否使用更严格方向保护。
+    n_bucket_pos_rate_max: 0.35  # 判 N 时 bucket 正类率需要足够低才算强证据。
+    n_posterior_max: 0.40  # 判 N 时 posterior 需要足够低才算强证据。
+    n_min_risk_gap: 0.08  # 判 N 时风险差需要足够大才算强证据。
+    p_bucket_pos_rate_min: 0.40  # 判 P 时 bucket 正类率需要足够高才算强证据。
+    p_posterior_min: 0.35  # 判 P 时 posterior 需要不太低才算强证据。
+    p_min_risk_gap: 0.08  # 判 P 时风险差需要足够大才算强证据。
+    parent_n_bucket_pos_rate_max: 0.32  # parent 判 N 时要求更低的 bucket 正类率。
+    parent_p_bucket_pos_rate_min: 0.42  # parent 判 P 时要求更高的 bucket 正类率。
+    parent_ambiguous_posterior_band: 0.03  # parent posterior 接近成本边界且 bucket 不强时不 rescue。
     min_conditions: 2  # 至少满足多少个明确性条件才 rescue。
   ablation:  # 消融实验开关。
     disable_cp_validation: false  # 是否关闭 CP 验证；关闭后 P/N 默认可靠。

@@ -40,6 +40,7 @@ def build_sample_record(
     closure_bucket = original_bucket_id if reliable else defer_result.get("closure_bucket")
     rescue_layer = ""
     rescue_conditions = ""
+    rescue_attempt_layer = "parent" if rescue_attempt.get("is_parent_rescue", False) else ("leaf" if rescue_attempt else "")
     if rescue_used:
         rescue_layer = "leaf" if closure_bucket == raw_bucket_id and original_bucket_id != "ROOT" else "parent"
         rescue_conditions = "+".join(rescue_result.get("conditions", []) or [])
@@ -87,8 +88,16 @@ def build_sample_record(
         "bnd_early_rescue_reason": rescue_result.get("rescue_reason", "") if rescue_used else "",
         "bnd_early_rescue_conditions": rescue_conditions,
         "bnd_early_rescue_layer": rescue_layer,
+        "bnd_early_rescue_attempt_layer": rescue_attempt_layer,
         "bnd_rescue_candidate_bucket": rescue_candidate_bucket,
         "bnd_rescue_candidate_level": bucket_level(rescue_candidate_bucket),
+        "bnd_directional_support": _json_dump(rescue_attempt.get("directional_support", {})),
+        "bnd_directional_evidence": _json_dump(rescue_attempt.get("directional_evidence", [])),
+        "bnd_p_support_count": int(rescue_attempt.get("p_support_count", 0) or 0),
+        "bnd_n_support_count": int(rescue_attempt.get("n_support_count", 0) or 0),
+        "bnd_direction_gap": int(rescue_attempt.get("direction_gap", 0) or 0),
+        "bnd_directional_guard_blocked": bool(rescue_attempt.get("blocked_by_directional_guard", False)),
+        "bnd_directional_guard_reason": rescue_attempt.get("directional_guard_reason", ""),
         "bnd_posterior_margin": rescue_attempt.get("posterior_margin"),
         "bnd_risk_gap": rescue_attempt.get("risk_gap"),
         "bnd_cp_gap": rescue_attempt.get("cp_gap"),
