@@ -122,6 +122,7 @@ def evaluate_bnd_early_rescue(
         "should_rescue": bool(should_rescue),
         "decision": decision,
         "rescue_reason": rescue_reason,
+        "conditions": list(conditions),
         "posterior_margin": float(posterior_margin),
         "risk_gap": float(risk_gap),
         "cp_gap": None if cp_gap is None else float(cp_gap),

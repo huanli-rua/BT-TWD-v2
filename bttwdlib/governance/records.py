@@ -38,8 +38,10 @@ def build_sample_record(
     rescue_used = bool(rescue_result.get("should_rescue", False)) if not reliable else False
     closure_bucket = original_bucket_id if reliable else defer_result.get("closure_bucket")
     rescue_layer = ""
+    rescue_conditions = ""
     if rescue_used:
         rescue_layer = "leaf" if closure_bucket == raw_bucket_id else "parent"
+        rescue_conditions = "+".join(rescue_result.get("conditions", []) or [])
     return {
         "dataset_name": dataset_name,
         "fold_id": fold_id,
@@ -82,6 +84,7 @@ def build_sample_record(
         "bnd_early_rescue_used": rescue_used,
         "bnd_early_rescue_decision": rescue_result.get("decision", "") if rescue_used else "",
         "bnd_early_rescue_reason": rescue_result.get("rescue_reason", "") if rescue_used else "",
+        "bnd_early_rescue_conditions": rescue_conditions,
         "bnd_early_rescue_layer": rescue_layer,
         "bnd_posterior_margin": rescue_attempt.get("posterior_margin"),
         "bnd_risk_gap": rescue_attempt.get("risk_gap"),

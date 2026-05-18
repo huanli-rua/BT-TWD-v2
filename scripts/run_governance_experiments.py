@@ -143,6 +143,15 @@ def _parent_bucket_id(bucket_id: str) -> str:
     return path[1] if len(path) > 1 else "ROOT"
 
 
+def _nearest_threshold_ancestor(bucket_id: str, records: dict, thresholds: dict) -> str:
+    for ancestor_id in bucket_path_to_root(bucket_id)[1:]:
+        if ancestor_id == "ROOT":
+            return "ROOT"
+        if ancestor_id in records and ancestor_id in thresholds:
+            return ancestor_id
+    return "ROOT"
+
+
 def _build_allowed_bucket_ids(train_bucket_ids: pd.Series, cfg: dict) -> set[str]:
     min_bucket_size = _bt_min_bucket_size(cfg)
     all_ids = sorted(_all_parent_ids(train_bucket_ids), key=bucket_level)
@@ -281,7 +290,7 @@ def _resolve_weak_buckets(
                 thresholds.pop(bucket_id, None)
 
         status = "weak" if weak_reasons else "strong"
-        effective_bucket_id = bucket_id if status == "strong" else parent_record["effective_bucket_id"]
+        effective_bucket_id = bucket_id if status == "strong" else _nearest_threshold_ancestor(bucket_id, records, thresholds)
         threshold_source_bucket = bucket_id if status == "strong" else effective_bucket_id
         records[bucket_id] = {
             "bucket_id": bucket_id,
@@ -379,6 +388,58 @@ def _error_rate(records: pd.DataFrame, decision_col: str) -> float:
     return float(np.mean(pred != records["true_label"].to_numpy()))
 
 
+def _json_dict(value) -> dict:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str) or not value:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _json_dump_dict(value: dict) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _condition_quality(records: pd.DataFrame) -> tuple[str, str, str]:
+    if records.empty or "bnd_early_rescue_conditions" not in records:
+        return "{}", "{}", "{}"
+    condition_series = records["bnd_early_rescue_conditions"].fillna("").replace("", "unknown")
+    counts = condition_series.value_counts().sort_index().to_dict()
+    error_rates = {}
+    regrets = {}
+    for condition_key, part in records.groupby(condition_series):
+        error_rates[str(condition_key)] = _error_rate(part, "final_decision")
+        regrets[str(condition_key)] = float(part["final_regret"].mean()) if len(part) else 0.0
+    return _json_dump_dict(counts), _json_dump_dict(error_rates), _json_dump_dict(regrets)
+
+
+def _sum_json_dict(series: pd.Series) -> dict:
+    totals: dict[str, float] = {}
+    for value in series:
+        for key, item in _json_dict(value).items():
+            totals[str(key)] = totals.get(str(key), 0.0) + float(item)
+    return {key: int(value) if float(value).is_integer() else float(value) for key, value in sorted(totals.items())}
+
+
+def _weighted_json_mean(value_series: pd.Series, count_series: pd.Series) -> dict:
+    numerators: dict[str, float] = {}
+    denominators: dict[str, float] = {}
+    for values_raw, counts_raw in zip(value_series, count_series):
+        values = _json_dict(values_raw)
+        counts = _json_dict(counts_raw)
+        for key, value in values.items():
+            weight = float(counts.get(key, 0.0))
+            if weight <= 0:
+                continue
+            numerators[key] = numerators.get(key, 0.0) + float(value) * weight
+            denominators[key] = denominators.get(key, 0.0) + weight
+    return {key: float(numerators[key] / denominators[key]) for key in sorted(numerators) if denominators.get(key, 0.0) > 0}
+
+
 def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
     final_binary = _decision_to_binary_for_metrics(records["final_decision"])
     original_binary = _decision_to_binary_for_metrics(records["original_twd_decision"])
@@ -402,6 +463,18 @@ def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
     bnd_rescue_records = bnd_records[bnd_records["bnd_early_rescue_used"]]
     bnd_rescue_leaf_records = bnd_rescue_records[bnd_rescue_records["bnd_early_rescue_layer"] == "leaf"]
     bnd_rescue_parent_records = bnd_rescue_records[bnd_rescue_records["bnd_early_rescue_layer"] == "parent"]
+    non_root_bnd_records = bnd_records[bnd_records["original_bucket_id"] != "ROOT"]
+    non_root_bnd_rescue_records = non_root_bnd_records[non_root_bnd_records["bnd_early_rescue_used"]]
+    root_bnd_from_effective_root_records = bnd_root_records[bnd_root_records["original_bucket_id"] == "ROOT"]
+    root_bnd_from_rescue_failed_records = bnd_root_records[bnd_root_records["original_bucket_id"] != "ROOT"]
+    rescue_root_error_delta = _error_rate(bnd_root_records, "final_decision") - _error_rate(
+        bnd_rescue_records, "final_decision"
+    )
+    rescue_root_regret_delta = (
+        (float(bnd_root_records["final_regret"].mean()) if len(bnd_root_records) else 0.0)
+        - (float(bnd_rescue_records["final_regret"].mean()) if len(bnd_rescue_records) else 0.0)
+    )
+    condition_counts, condition_error_rates, condition_regrets = _condition_quality(bnd_rescue_records)
     evidence_counts = records["evidence_path"].fillna("").apply(_json_len)
     weight_entropy = records["evidence_weights"].fillna("").apply(_json_weight_entropy)
     return {
@@ -438,6 +511,21 @@ def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
         "bnd_early_rescue_at_leaf_count": int(len(bnd_rescue_leaf_records)),
         "bnd_early_rescue_at_parent_count": int(len(bnd_rescue_parent_records)),
         "root_bnd_count_after_rescue": int(len(bnd_root_records)),
+        "non_root_bnd_count": int(len(non_root_bnd_records)),
+        "non_root_bnd_rescue_count": int(len(non_root_bnd_rescue_records)),
+        "non_root_bnd_rescue_rate": float(len(non_root_bnd_rescue_records) / len(non_root_bnd_records))
+        if len(non_root_bnd_records)
+        else 0.0,
+        "root_bnd_reduction_rate": float(1.0 - len(root_bnd_from_rescue_failed_records) / len(non_root_bnd_records))
+        if len(non_root_bnd_records)
+        else 0.0,
+        "rescue_vs_root_error_delta": float(rescue_root_error_delta),
+        "rescue_vs_root_regret_delta": float(rescue_root_regret_delta),
+        "root_bnd_from_effective_root_count": int(len(root_bnd_from_effective_root_records)),
+        "root_bnd_from_rescue_failed_count": int(len(root_bnd_from_rescue_failed_records)),
+        "bnd_early_rescue_condition_counts": condition_counts,
+        "bnd_early_rescue_condition_error_rates": condition_error_rates,
+        "bnd_early_rescue_condition_regrets": condition_regrets,
         "cp_pass_count": cp_pass_count,
         "cp_reject_count": cp_reject_count,
         "cp_reject_defer_count": int((pn_records["defer_trigger_source"] == "post_validation").sum()),
@@ -645,19 +733,32 @@ def _mode_name(governance: dict) -> str:
 
 def _summarize_dataset(fold_df: pd.DataFrame) -> dict:
     row = {"dataset_name": fold_df["dataset_name"].iat[0]}
+    json_cols = {
+        "bnd_early_rescue_condition_counts",
+        "bnd_early_rescue_condition_error_rates",
+        "bnd_early_rescue_condition_regrets",
+    }
     count_cols = [col for col in fold_df.columns if col.endswith("_count") or col.endswith("_count_after_rescue")]
     for col in [c for c in fold_df.columns if c not in {"dataset_name", "fold_id"}]:
+        if col in json_cols:
+            continue
         if col in count_cols:
             row[col] = int(fold_df[col].sum())
         elif fold_df[col].dtype == bool:
             row[col] = bool(fold_df[col].any())
-        else:
+        elif pd.api.types.is_numeric_dtype(fold_df[col]):
             row[col] = float(fold_df[col].mean())
+        else:
+            row[col] = fold_df[col].dropna().iat[0] if len(fold_df[col].dropna()) else ""
     total_cols = {
         "total_bnd_early_rescue_count": "bnd_early_rescue_count",
         "total_bnd_early_rescue_at_leaf_count": "bnd_early_rescue_at_leaf_count",
         "total_bnd_early_rescue_at_parent_count": "bnd_early_rescue_at_parent_count",
         "total_root_bnd_after_rescue": "root_bnd_count_after_rescue",
+        "total_non_root_bnd_count": "non_root_bnd_count",
+        "total_non_root_bnd_rescue_count": "non_root_bnd_rescue_count",
+        "total_root_bnd_from_effective_root_count": "root_bnd_from_effective_root_count",
+        "total_root_bnd_from_rescue_failed_count": "root_bnd_from_rescue_failed_count",
     }
     for output_col, source_col in total_cols.items():
         if source_col in fold_df:
@@ -666,10 +767,31 @@ def _summarize_dataset(fold_df: pd.DataFrame) -> dict:
         "avg_bnd_early_rescue_error_rate": "bnd_early_rescue_error_rate",
         "avg_bnd_early_rescue_regret": "bnd_early_rescue_regret",
         "avg_bnd_early_rescue_positive_rate": "bnd_early_rescue_positive_rate",
+        "avg_non_root_bnd_rescue_rate": "non_root_bnd_rescue_rate",
+        "avg_root_bnd_reduction_rate": "root_bnd_reduction_rate",
+        "avg_rescue_vs_root_error_delta": "rescue_vs_root_error_delta",
+        "avg_rescue_vs_root_regret_delta": "rescue_vs_root_regret_delta",
     }
     for output_col, source_col in avg_cols.items():
         if source_col in fold_df:
             row[output_col] = float(fold_df[source_col].mean())
+    if "bnd_early_rescue_condition_counts" in fold_df:
+        condition_counts = _sum_json_dict(fold_df["bnd_early_rescue_condition_counts"])
+        row["bnd_early_rescue_condition_counts"] = _json_dump_dict(condition_counts)
+        if "bnd_early_rescue_condition_error_rates" in fold_df:
+            row["bnd_early_rescue_condition_error_rates"] = _json_dump_dict(
+                _weighted_json_mean(
+                    fold_df["bnd_early_rescue_condition_error_rates"],
+                    fold_df["bnd_early_rescue_condition_counts"],
+                )
+            )
+        if "bnd_early_rescue_condition_regrets" in fold_df:
+            row["bnd_early_rescue_condition_regrets"] = _json_dump_dict(
+                _weighted_json_mean(
+                    fold_df["bnd_early_rescue_condition_regrets"],
+                    fold_df["bnd_early_rescue_condition_counts"],
+                )
+            )
     return row
 
 
