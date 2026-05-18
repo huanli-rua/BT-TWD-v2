@@ -120,11 +120,23 @@ def _validate_layer(sample_id, bucket_id, decision, posterior, risk_values, conf
     )
 
 
-def _legacy_resolve(sample_id, start_bucket_id, posterior, thresholds, config, cp_validator=None, bucket_meta=None):
+def _legacy_resolve(
+    sample_id,
+    start_bucket_id,
+    posterior,
+    thresholds,
+    config,
+    cp_validator=None,
+    bucket_meta=None,
+    initial_decision=None,
+    initial_validation=None,
+    rescue_start_bucket_id=None,
+):
     """progressive_update.enabled=false 时的旧闭合逻辑：parent/root 替代。"""
 
     costs = (config.get("THRESHOLD") or config.get("THRESHOLDS", {})).get("costs", {})
-    current = start_bucket_id
+    lifecycle_start_bucket_id = rescue_start_bucket_id if rescue_start_bucket_id and rescue_start_bucket_id != "ROOT" else start_bucket_id
+    current = lifecycle_start_bucket_id
     defer_path = []
     status_log = []
     context = {}
@@ -133,9 +145,10 @@ def _legacy_resolve(sample_id, start_bucket_id, posterior, thresholds, config, c
     while True:
         alpha, beta = thresholds.get(current, thresholds.get("ROOT", (0.5, 0.0)))
         risk_values = risk_values_for_probability(posterior, costs)
-        decision = decide_twd(posterior, alpha, beta)
+        first_step = len(defer_path) == 0
+        decision = initial_decision if first_step and initial_decision else decide_twd(posterior, alpha, beta)
         level = bucket_level(current)
-        validation = (
+        validation = initial_validation if first_step and initial_validation is not None else (
             {
                 "reliable": True,
                 "score": 1.0,
@@ -247,6 +260,7 @@ def resolve_deferred_sample(
     initial_decision=None,
     initial_validation=None,
     bucket_meta=None,
+    rescue_start_bucket_id=None,
 ):
     """沿 leaf -> parent -> root 渐进式累积风险证据并闭合 defer 样本。"""
 
@@ -259,10 +273,14 @@ def resolve_deferred_sample(
             config,
             cp_validator=cp_validator,
             bucket_meta=bucket_meta,
+            initial_decision=initial_decision,
+            initial_validation=initial_validation,
+            rescue_start_bucket_id=rescue_start_bucket_id,
         )
 
     costs = (config.get("THRESHOLD") or config.get("THRESHOLDS", {})).get("costs", {})
-    current = start_bucket_id
+    lifecycle_start_bucket_id = rescue_start_bucket_id if rescue_start_bucket_id and rescue_start_bucket_id != "ROOT" else start_bucket_id
+    current = lifecycle_start_bucket_id
     defer_path = []
     status_log = []
     context = {}
@@ -271,12 +289,13 @@ def resolve_deferred_sample(
     while True:
         alpha, beta = thresholds.get(current, thresholds.get("ROOT", (0.5, 0.0)))
         risk_values = risk_values_for_probability(posterior, costs)
-        decision = initial_decision if current == start_bucket_id and initial_decision else decide_twd(posterior, alpha, beta)
+        first_step = len(defer_path) == 0
+        decision = initial_decision if first_step and initial_decision else decide_twd(posterior, alpha, beta)
         level = bucket_level(current)
 
         validation = (
             initial_validation
-            if current == start_bucket_id and initial_validation is not None
+            if first_step and initial_validation is not None
             else (
                 {
                     "reliable": True,
@@ -372,7 +391,7 @@ def resolve_deferred_sample(
         # 触发 defer 的原层只记录证据，不立即用自身聚合结果闭合；
         # 对 P/N 层，如果 CP 未通过，则继续向 parent 累积证据。
         can_close_by_aggregation = (
-            current != start_bucket_id
+            current != lifecycle_start_bucket_id
             and aggregated_decision in {"P", "N"}
             and decision in {"P", "N"}
             and (bool(validation.get("reliable")) or is_cp_disabled(config))

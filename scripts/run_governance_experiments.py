@@ -152,6 +152,68 @@ def _nearest_threshold_ancestor(bucket_id: str, records: dict, thresholds: dict)
     return "ROOT"
 
 
+def _governance_cfg(cfg: dict) -> dict:
+    return cfg.get("governance") or cfg.get("GOVERNANCE") or {}
+
+
+def _bnd_rescue_cfg(cfg: dict) -> dict:
+    return _governance_cfg(cfg).get("bnd_early_rescue", {}) or {}
+
+
+def _weak_reason_list(value) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    if not isinstance(value, str) or not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except Exception:
+        return [value]
+    if isinstance(parsed, list):
+        return [str(item) for item in parsed]
+    return [str(parsed)]
+
+
+def _nearest_rescue_only_bucket_id(
+    raw_bucket_id: str,
+    effective_bucket_id: str,
+    bucket_meta: dict,
+    cfg: dict,
+) -> str | None:
+    rescue_cfg = _bnd_rescue_cfg(cfg)
+    if not bool(rescue_cfg.get("rescue_only_parent_enabled", True)):
+        return None
+    if effective_bucket_id != "ROOT" or not raw_bucket_id or raw_bucket_id == "ROOT":
+        return None
+
+    path = bucket_path_to_root(str(raw_bucket_id))
+    if len(path) <= 1:
+        return None
+    candidates = path[1:-1] if bucket_level(raw_bucket_id) >= 3 else path[:-1]
+    min_support = int(rescue_cfg.get("min_bucket_support", 20) or 0)
+    allowed_weak_reasons = {
+        str(item)
+        for item in rescue_cfg.get("rescue_only_allowed_weak_reasons", ["insufficient_improvement_over_parent"])
+        or []
+    }
+
+    for candidate_id in candidates:
+        record = (bucket_meta or {}).get(candidate_id)
+        if not record:
+            continue
+        try:
+            n_val = int(float(record.get("n_val", 0) or 0))
+        except (TypeError, ValueError):
+            n_val = 0
+        if min_support > 0 and n_val < min_support:
+            continue
+        reasons = set(_weak_reason_list(record.get("weak_reasons", [])))
+        if reasons - allowed_weak_reasons:
+            continue
+        return candidate_id
+    return None
+
+
 def _build_allowed_bucket_ids(train_bucket_ids: pd.Series, cfg: dict) -> set[str]:
     min_bucket_size = _bt_min_bucket_size(cfg)
     all_ids = sorted(_all_parent_ids(train_bucket_ids), key=bucket_level)
@@ -463,6 +525,13 @@ def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
     bnd_rescue_records = bnd_records[bnd_records["bnd_early_rescue_used"]]
     bnd_rescue_leaf_records = bnd_rescue_records[bnd_rescue_records["bnd_early_rescue_layer"] == "leaf"]
     bnd_rescue_parent_records = bnd_rescue_records[bnd_rescue_records["bnd_early_rescue_layer"] == "parent"]
+    bnd_rescue_candidate_records = (
+        bnd_records[bnd_records["bnd_rescue_candidate_bucket"].fillna("") != ""]
+        if "bnd_rescue_candidate_bucket" in bnd_records
+        else bnd_records.iloc[0:0]
+    )
+    bnd_rescue_candidate_success_records = bnd_rescue_candidate_records[bnd_rescue_candidate_records["bnd_early_rescue_used"]]
+    bnd_rescue_from_effective_root_records = bnd_rescue_records[bnd_rescue_records["original_bucket_id"] == "ROOT"]
     non_root_bnd_records = bnd_records[bnd_records["original_bucket_id"] != "ROOT"]
     non_root_bnd_rescue_records = non_root_bnd_records[non_root_bnd_records["bnd_early_rescue_used"]]
     root_bnd_from_effective_root_records = bnd_root_records[bnd_root_records["original_bucket_id"] == "ROOT"]
@@ -510,6 +579,15 @@ def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
         else 0.0,
         "bnd_early_rescue_at_leaf_count": int(len(bnd_rescue_leaf_records)),
         "bnd_early_rescue_at_parent_count": int(len(bnd_rescue_parent_records)),
+        "bnd_rescue_parent_candidate_count": int(len(bnd_rescue_candidate_records)),
+        "bnd_rescue_parent_candidate_success_count": int(len(bnd_rescue_candidate_success_records)),
+        "bnd_rescue_parent_candidate_success_rate": float(
+            len(bnd_rescue_candidate_success_records) / len(bnd_rescue_candidate_records)
+        )
+        if len(bnd_rescue_candidate_records)
+        else 0.0,
+        "bnd_rescue_from_effective_root_count": int(len(bnd_rescue_from_effective_root_records)),
+        "bnd_rescue_from_effective_root_error_rate": _error_rate(bnd_rescue_from_effective_root_records, "final_decision"),
         "root_bnd_count_after_rescue": int(len(bnd_root_records)),
         "non_root_bnd_count": int(len(non_root_bnd_records)),
         "non_root_bnd_rescue_count": int(len(non_root_bnd_rescue_records)),
@@ -619,6 +697,11 @@ def run_dataset(
             p = float(posterior_test[local_idx])
             alpha, beta = thresholds.get(bucket_id, thresholds["ROOT"])
             original_decision = decide_twd(p, alpha, beta)
+            rescue_start_bucket_id = (
+                _nearest_rescue_only_bucket_id(raw_bucket_id, bucket_id, bucket_meta, cfg)
+                if original_decision == "BND"
+                else None
+            )
             risks = risk_values_for_probability(p, costs)
             validation = validate_post_decision(
                 sample_id=int(test_idx[local_idx]),
@@ -642,6 +725,7 @@ def run_dataset(
                     initial_decision=original_decision,
                     initial_validation=validation,
                     bucket_meta=bucket_meta,
+                    rescue_start_bucket_id=rescue_start_bucket_id,
                 )
             final_decision = original_decision if validation["reliable"] else defer_result["final_decision"]
             rec = build_sample_record(
@@ -665,6 +749,7 @@ def run_dataset(
                     "bucket_score": bucket_info.get("score", 0.0),
                     "bucket_parent_score": bucket_info.get("parent_score", 0.0),
                     "bucket_gain": bucket_info.get("gain", 0.0),
+                    "bnd_rescue_candidate_bucket": rescue_start_bucket_id or "",
                 },
             )
             fold_records.append(rec)
@@ -707,6 +792,10 @@ def _merge_governance_override(base: dict | None, cli_args: argparse.Namespace |
     governance["bnd_early_rescue"].setdefault("cp_override_threshold", 0.20)
     governance["bnd_early_rescue"].setdefault("bucket_margin_threshold", 0.15)
     governance["bnd_early_rescue"].setdefault("min_bucket_support", 20)
+    governance["bnd_early_rescue"].setdefault("rescue_only_parent_enabled", True)
+    governance["bnd_early_rescue"].setdefault(
+        "rescue_only_allowed_weak_reasons", ["insufficient_improvement_over_parent"]
+    )
     governance["bnd_early_rescue"].setdefault("min_conditions", 2)
     governance["ablation"].setdefault("disable_cp_validation", False)
     governance["ablation"].setdefault("disable_progressive_update", False)
@@ -759,6 +848,9 @@ def _summarize_dataset(fold_df: pd.DataFrame) -> dict:
         "total_non_root_bnd_rescue_count": "non_root_bnd_rescue_count",
         "total_root_bnd_from_effective_root_count": "root_bnd_from_effective_root_count",
         "total_root_bnd_from_rescue_failed_count": "root_bnd_from_rescue_failed_count",
+        "total_bnd_rescue_parent_candidate_count": "bnd_rescue_parent_candidate_count",
+        "total_bnd_rescue_parent_candidate_success_count": "bnd_rescue_parent_candidate_success_count",
+        "total_bnd_rescue_from_effective_root_count": "bnd_rescue_from_effective_root_count",
     }
     for output_col, source_col in total_cols.items():
         if source_col in fold_df:
@@ -771,6 +863,8 @@ def _summarize_dataset(fold_df: pd.DataFrame) -> dict:
         "avg_root_bnd_reduction_rate": "root_bnd_reduction_rate",
         "avg_rescue_vs_root_error_delta": "rescue_vs_root_error_delta",
         "avg_rescue_vs_root_regret_delta": "rescue_vs_root_regret_delta",
+        "avg_bnd_rescue_parent_candidate_success_rate": "bnd_rescue_parent_candidate_success_rate",
+        "avg_bnd_rescue_from_effective_root_error_rate": "bnd_rescue_from_effective_root_error_rate",
     }
     for output_col, source_col in avg_cols.items():
         if source_col in fold_df:

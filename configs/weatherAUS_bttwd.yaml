@@ -100,6 +100,8 @@ governance:  # 第二篇 governance 主流程参数。
     cp_override_threshold: 0.20  # CP 差距足够大时允许按 CP 支持类别闭合。
     bucket_margin_threshold: 0.15  # 当前 bucket 验证集正类率相对 0.5 的最小明确边距。
     min_bucket_support: 20  # 当前 bucket 至少需要的验证集样本数。
+    rescue_only_parent_enabled: true  # effective ROOT 的 BND 是否允许先用最近 parent 做 rescue-only 尝试。
+    rescue_only_allowed_weak_reasons: [insufficient_improvement_over_parent]  # 只允许结构收益不足的 weak parent 作为 rescue 证据。
     min_conditions: 2  # 至少满足多少个明确性条件才 rescue。
   ablation:  # 消融实验开关。
     disable_cp_validation: false  # 是否关闭 CP 验证；关闭后 P/N 默认可靠。

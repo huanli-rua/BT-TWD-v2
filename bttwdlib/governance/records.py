@@ -33,6 +33,7 @@ def build_sample_record(
     bucket_context = bucket_context or {}
     raw_bucket_id = bucket_context.get("raw_bucket_id", original_bucket_id)
     effective_bucket_id = bucket_context.get("effective_bucket_id", original_bucket_id)
+    rescue_candidate_bucket = bucket_context.get("bnd_rescue_candidate_bucket", "") or ""
     rescue_result = (defer_result or {}).get("bnd_early_rescue", {}) or {}
     rescue_attempt = rescue_result or (defer_result or {}).get("bnd_early_rescue_attempt", {}) or {}
     rescue_used = bool(rescue_result.get("should_rescue", False)) if not reliable else False
@@ -40,7 +41,7 @@ def build_sample_record(
     rescue_layer = ""
     rescue_conditions = ""
     if rescue_used:
-        rescue_layer = "leaf" if closure_bucket == raw_bucket_id else "parent"
+        rescue_layer = "leaf" if closure_bucket == raw_bucket_id and original_bucket_id != "ROOT" else "parent"
         rescue_conditions = "+".join(rescue_result.get("conditions", []) or [])
     return {
         "dataset_name": dataset_name,
@@ -86,6 +87,8 @@ def build_sample_record(
         "bnd_early_rescue_reason": rescue_result.get("rescue_reason", "") if rescue_used else "",
         "bnd_early_rescue_conditions": rescue_conditions,
         "bnd_early_rescue_layer": rescue_layer,
+        "bnd_rescue_candidate_bucket": rescue_candidate_bucket,
+        "bnd_rescue_candidate_level": bucket_level(rescue_candidate_bucket),
         "bnd_posterior_margin": rescue_attempt.get("posterior_margin"),
         "bnd_risk_gap": rescue_attempt.get("risk_gap"),
         "bnd_cp_gap": rescue_attempt.get("cp_gap"),
