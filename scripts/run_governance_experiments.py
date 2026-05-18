@@ -450,6 +450,71 @@ def _error_rate(records: pd.DataFrame, decision_col: str) -> float:
     return float(np.mean(pred != records["true_label"].to_numpy()))
 
 
+def _safe_rate(numerator: float, denominator: float) -> float:
+    return float(numerator / denominator) if denominator else 0.0
+
+
+def _classification_stats(
+    records: pd.DataFrame,
+    decision_col: str,
+    prefix: str,
+    regret_col: str = "final_regret",
+) -> dict:
+    if records.empty:
+        return {
+            f"{prefix}_tp_count": 0,
+            f"{prefix}_tn_count": 0,
+            f"{prefix}_fp_count": 0,
+            f"{prefix}_fn_count": 0,
+            f"{prefix}_precision": 0.0,
+            f"{prefix}_recall": 0.0,
+            f"{prefix}_specificity": 0.0,
+            f"{prefix}_fpr": 0.0,
+            f"{prefix}_fnr": 0.0,
+            f"{prefix}_pred_positive_rate": 0.0,
+            f"{prefix}_true_positive_rate": 0.0,
+            f"{prefix}_positive_rate_gap": 0.0,
+            f"{prefix}_recall_specificity_gap": 0.0,
+            f"{prefix}_fp_regret_sum": 0.0,
+            f"{prefix}_fn_regret_sum": 0.0,
+        }
+
+    pred = _decision_to_binary_for_metrics(records[decision_col])
+    truth = records["true_label"].astype(int).to_numpy()
+    tp_mask = (pred == 1) & (truth == 1)
+    tn_mask = (pred == 0) & (truth == 0)
+    fp_mask = (pred == 1) & (truth == 0)
+    fn_mask = (pred == 0) & (truth == 1)
+    tp = int(tp_mask.sum())
+    tn = int(tn_mask.sum())
+    fp = int(fp_mask.sum())
+    fn = int(fn_mask.sum())
+    n = int(len(records))
+    precision = _safe_rate(tp, tp + fp)
+    recall = _safe_rate(tp, tp + fn)
+    specificity = _safe_rate(tn, tn + fp)
+    pred_positive_rate = _safe_rate(tp + fp, n)
+    true_positive_rate = _safe_rate(tp + fn, n)
+    regret_values = records[regret_col].astype(float).to_numpy() if regret_col in records else np.zeros(n)
+    return {
+        f"{prefix}_tp_count": tp,
+        f"{prefix}_tn_count": tn,
+        f"{prefix}_fp_count": fp,
+        f"{prefix}_fn_count": fn,
+        f"{prefix}_precision": precision,
+        f"{prefix}_recall": recall,
+        f"{prefix}_specificity": specificity,
+        f"{prefix}_fpr": _safe_rate(fp, fp + tn),
+        f"{prefix}_fnr": _safe_rate(fn, fn + tp),
+        f"{prefix}_pred_positive_rate": pred_positive_rate,
+        f"{prefix}_true_positive_rate": true_positive_rate,
+        f"{prefix}_positive_rate_gap": pred_positive_rate - true_positive_rate,
+        f"{prefix}_recall_specificity_gap": recall - specificity,
+        f"{prefix}_fp_regret_sum": float(regret_values[fp_mask].sum()),
+        f"{prefix}_fn_regret_sum": float(regret_values[fn_mask].sum()),
+    }
+
+
 def _json_dict(value) -> dict:
     if isinstance(value, dict):
         return value
@@ -502,6 +567,30 @@ def _weighted_json_mean(value_series: pd.Series, count_series: pd.Series) -> dic
     return {key: float(numerators[key] / denominators[key]) for key in sorted(numerators) if denominators.get(key, 0.0) > 0}
 
 
+def _refresh_classification_rates_from_counts(row: dict) -> None:
+    prefixes = [key[: -len("_tp_count")] for key in row if key.endswith("_tp_count")]
+    for prefix in prefixes:
+        tp = float(row.get(f"{prefix}_tp_count", 0.0) or 0.0)
+        tn = float(row.get(f"{prefix}_tn_count", 0.0) or 0.0)
+        fp = float(row.get(f"{prefix}_fp_count", 0.0) or 0.0)
+        fn = float(row.get(f"{prefix}_fn_count", 0.0) or 0.0)
+        total = tp + tn + fp + fn
+        precision = _safe_rate(tp, tp + fp)
+        recall = _safe_rate(tp, tp + fn)
+        specificity = _safe_rate(tn, tn + fp)
+        pred_positive_rate = _safe_rate(tp + fp, total)
+        true_positive_rate = _safe_rate(tp + fn, total)
+        row[f"{prefix}_precision"] = precision
+        row[f"{prefix}_recall"] = recall
+        row[f"{prefix}_specificity"] = specificity
+        row[f"{prefix}_fpr"] = _safe_rate(fp, fp + tn)
+        row[f"{prefix}_fnr"] = _safe_rate(fn, fn + tp)
+        row[f"{prefix}_pred_positive_rate"] = pred_positive_rate
+        row[f"{prefix}_true_positive_rate"] = true_positive_rate
+        row[f"{prefix}_positive_rate_gap"] = pred_positive_rate - true_positive_rate
+        row[f"{prefix}_recall_specificity_gap"] = recall - specificity
+
+
 def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
     final_binary = _decision_to_binary_for_metrics(records["final_decision"])
     original_binary = _decision_to_binary_for_metrics(records["original_twd_decision"])
@@ -546,7 +635,7 @@ def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
     condition_counts, condition_error_rates, condition_regrets = _condition_quality(bnd_rescue_records)
     evidence_counts = records["evidence_path"].fillna("").apply(_json_len)
     weight_entropy = records["evidence_weights"].fillna("").apply(_json_weight_entropy)
-    return {
+    summary = {
         "dataset_name": records["dataset_name"].iat[0],
         "fold_id": records["fold_id"].iat[0],
         "final_regret": float(records["final_regret"].mean()),
@@ -623,6 +712,20 @@ def _summarize_fold(records: pd.DataFrame, y_score: np.ndarray) -> dict:
         "average_weight_entropy": float(weight_entropy.mean()),
         "progressive_closed_count": int((records["closed"] & records["progressive_update_enabled"]).sum()),
     }
+    for prefix, frame, decision_col, regret_col in [
+        ("final", records, "final_decision", "final_regret"),
+        ("original", records, "original_twd_decision", "original_regret"),
+        ("bnd_closed", bnd_records, "final_decision", "final_regret"),
+        ("bnd_early_rescue", bnd_rescue_records, "final_decision", "final_regret"),
+        ("bnd_early_rescue_at_leaf", bnd_rescue_leaf_records, "final_decision", "final_regret"),
+        ("bnd_early_rescue_at_parent", bnd_rescue_parent_records, "final_decision", "final_regret"),
+        ("bnd_rescue_from_effective_root", bnd_rescue_from_effective_root_records, "final_decision", "final_regret"),
+        ("root_bnd_after_rescue", bnd_root_records, "final_decision", "final_regret"),
+        ("root_bnd_from_effective_root", root_bnd_from_effective_root_records, "final_decision", "final_regret"),
+        ("root_bnd_from_rescue_failed", root_bnd_from_rescue_failed_records, "final_decision", "final_regret"),
+    ]:
+        summary.update(_classification_stats(frame, decision_col, prefix, regret_col=regret_col))
+    return summary
 
 
 def run_dataset(
@@ -827,7 +930,11 @@ def _summarize_dataset(fold_df: pd.DataFrame) -> dict:
         "bnd_early_rescue_condition_error_rates",
         "bnd_early_rescue_condition_regrets",
     }
-    count_cols = [col for col in fold_df.columns if col.endswith("_count") or col.endswith("_count_after_rescue")]
+    count_cols = [
+        col
+        for col in fold_df.columns
+        if col.endswith("_count") or col.endswith("_count_after_rescue") or col.endswith("_regret_sum")
+    ]
     for col in [c for c in fold_df.columns if c not in {"dataset_name", "fold_id"}]:
         if col in json_cols:
             continue
@@ -869,6 +976,7 @@ def _summarize_dataset(fold_df: pd.DataFrame) -> dict:
     for output_col, source_col in avg_cols.items():
         if source_col in fold_df:
             row[output_col] = float(fold_df[source_col].mean())
+    _refresh_classification_rates_from_counts(row)
     if "bnd_early_rescue_condition_counts" in fold_df:
         condition_counts = _sum_json_dict(fold_df["bnd_early_rescue_condition_counts"])
         row["bnd_early_rescue_condition_counts"] = _json_dump_dict(condition_counts)
@@ -889,6 +997,34 @@ def _summarize_dataset(fold_df: pd.DataFrame) -> dict:
     return row
 
 
+def _upsert_dataset_summary(summary_path: Path, rows: list[dict]) -> pd.DataFrame:
+    new_df = pd.DataFrame(rows)
+    if new_df.empty:
+        return new_df
+    new_df = new_df.drop_duplicates(subset=["dataset_name"], keep="last")
+
+    if summary_path.exists():
+        try:
+            existing_df = pd.read_csv(summary_path)
+        except pd.errors.EmptyDataError:
+            existing_df = pd.DataFrame()
+    else:
+        existing_df = pd.DataFrame()
+
+    if not existing_df.empty and "dataset_name" in existing_df.columns:
+        existing_df = existing_df.drop_duplicates(subset=["dataset_name"], keep="last")
+        updated_names = set(new_df["dataset_name"].astype(str))
+        existing_df = existing_df[~existing_df["dataset_name"].astype(str).isin(updated_names)]
+        combined_df = pd.concat([existing_df, new_df], ignore_index=True, sort=False)
+    else:
+        combined_df = new_df
+
+    columns = ["dataset_name"] + [col for col in combined_df.columns if col != "dataset_name"]
+    combined_df = combined_df[columns]
+    combined_df.to_csv(summary_path, index=False)
+    return combined_df
+
+
 def run(config_path: Path, cli_args: argparse.Namespace | None = None) -> None:
     root_cfg = load_yaml(config_path)
     governance_override = _merge_governance_override(root_cfg.get("governance") or root_cfg.get("GOVERNANCE"), cli_args)
@@ -901,7 +1037,7 @@ def run(config_path: Path, cli_args: argparse.Namespace | None = None) -> None:
         dataset_out = ensure_dir(output_root / dataset_name)
         _, fold_df = run_dataset(dataset_name, dataset_cfg_path, dataset_out, governance_override=governance_override)
         dataset_summaries.append(_summarize_dataset(fold_df))
-    pd.DataFrame(dataset_summaries).to_csv(output_root / "dataset_summary.csv", index=False)
+    _upsert_dataset_summary(output_root / "dataset_summary.csv", dataset_summaries)
     log_info(f"【governance】结果已写入 {output_root}")
 
 
